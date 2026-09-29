@@ -1337,10 +1337,10 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
     onPointerDown: handlePointerDown,
     children: [
       jsxs('div', {
-        className: 'flex min-w-0 items-start gap-2',
+        className: 'flex min-w-0 flex-wrap items-start gap-x-2 gap-y-0.5',
         children: [
           jsxs('div', {
-            className: 'min-w-0 flex-1',
+            className: 'min-w-0 flex-1 basis-48',
             children: [
               jsxs('div', {
                 className: cn(
@@ -1363,7 +1363,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
             ]
           }),
           jsxs('div', {
-            className: 'flex shrink-0 items-center gap-0.5 self-start',
+            className: 'ms-auto flex shrink-0 items-center gap-0.5 self-start',
             children: [
               due ? jsx('span', {
                 className: cn(
