@@ -163,7 +163,15 @@ function resolveDropTarget(x, y) {
 function dropTaskAt(task, x, y) {
   const target = resolveDropTarget(x, y)
   if (!target) return
-  if (!dropContext || !dropContext.reorder) return
+  if (!dropContext) return
+  if (task.inbox || task.plan === 'now') {
+    if (!dropContext.update) return
+    const changes = { category: target.categoryId, inbox: false }
+    if (task.plan === 'now') changes.plan = 'today'
+    dropContext.update(task.id, changes)
+    return
+  }
+  if (!dropContext.reorder) return
   const siblings = (dropContext.sections[target.categoryId] || []).filter(item => item.id !== task.id)
   const clamped = Math.max(0, Math.min(target.index, siblings.length))
   const before = siblings[clamped]
@@ -1204,7 +1212,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
   const [editing, setEditing] = useState(false)
   const disabled = pending || workingId === task.id
   const due = dueLabel(task)
-  const draggable = task.status !== 'done' && task.plan !== 'now' && !task.inbox
+  const draggable = task.status !== 'done'
 
   const handlePointerDown = event => {
     if (!draggable) return
@@ -1226,7 +1234,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
       const dy = moveEvent.clientY - dragPointerState.startY
       if (!armed && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
         armed = true
-        beginPointerDrag(dragPointerState, moveEvent)
+              beginPointerDrag(dragPointerState, moveEvent)
       }
     }
     const onUp = () => {
@@ -1405,10 +1413,11 @@ function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
   useEffect(() => {
     dropContext.sections[categoryId] = tasks
     dropContext.reorder = rowProps.reorder
+    dropContext.update = rowProps.update
     return () => {
       delete dropContext.sections[categoryId]
     }
-  }, [categoryId, rowProps.reorder, tasks])
+  }, [categoryId, rowProps.reorder, rowProps.update, tasks])
 
   const dropLine = index => jsx('div', {
     'data-drop-line': `${categoryId}-${index}`,
@@ -1591,10 +1600,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.4.1 · Shared with Hermes'
+    ? 'v0.4.2 · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.4.1 · Connecting…'
-      : `v0.4.1 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.4.2 · Connecting…'
+      : `v0.4.2 · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     completeSession: remote.completeSession,
