@@ -1339,18 +1339,22 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                 className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
                 children: task.brief.replace(/\s+/g, ' ').trim()
               }),
-              (reason || due || task.project || task.priority || task.owner || task.nextAction || task.recurrence || task.inbox) && jsx('div', {
-                className: cn(
-                  'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
-                  due?.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
-                ),
-                children: [reason, task.inbox ? 'Inbox' : null, due, `${task.estimate}m`, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
+              (reason || task.project || task.owner || task.nextAction || task.recurrence || task.inbox) && jsx('div', {
+                className: 'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
+                children: [reason, task.inbox ? 'Inbox' : null, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
               })
             ]
           }),
           jsxs('div', {
             className: 'flex shrink-0 items-center gap-0.5 self-start',
             children: [
+              due ? jsx('span', {
+                className: cn(
+                  'mr-0.5 whitespace-nowrap text-[0.625rem] text-(--ui-text-quaternary)',
+                  due.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
+                ),
+                children: `${due} ·`
+              }, 'due-label') : null,
               jsx(EstimateButton, { disabled, minutes: task.estimate, onClick: () => void cycleEstimate(task) }),
               jsx(IconButton, {
                 disabled,
