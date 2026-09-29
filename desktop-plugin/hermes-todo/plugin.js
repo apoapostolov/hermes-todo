@@ -93,6 +93,7 @@ const DRAG_THRESHOLD_PX = 6
 
 function beginPointerDrag(state, event) {
   state.active = true
+  setDragActive(true)
   document.body.style.userSelect = 'none'
   const ghost = document.createElement('div')
   ghost.textContent = state.task.title
@@ -118,6 +119,7 @@ function beginPointerDrag(state, event) {
     window.removeEventListener('pointerup', onUp, true)
     window.removeEventListener('keydown', onKey, true)
     document.body.style.userSelect = ''
+    setDragActive(false)
     if (ghost.parentNode) ghost.parentNode.removeChild(ghost)
     clearDropIndicator()
     const task = state.task
@@ -1333,6 +1335,10 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                   task.title
                 ]
               }),
+              task.brief && jsx('div', {
+                className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
+                children: task.brief.replace(/\s+/g, ' ').trim()
+              }),
               (reason || due || task.project || task.priority || task.owner || task.nextAction || task.recurrence || task.inbox) && jsx('div', {
                 className: cn(
                   'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
@@ -1442,6 +1448,24 @@ const CATEGORY_ORDER = ['today', 'tomorrow', 'this-week', 'this-month', 'soon']
 
 let dropContext = { sections: {}, reorder: null, indicator: null }
 
+const dragActiveStore = { value: false, listeners: new Set() }
+function setDragActive(value) {
+  if (dragActiveStore.value === value) return
+  dragActiveStore.value = value
+  for (const listener of dragActiveStore.listeners) listener()
+}
+function useDragActive() {
+  const [value, setValue] = useState(dragActiveStore.value)
+  useEffect(() => {
+    const listener = () => setValue(dragActiveStore.value)
+    dragActiveStore.listeners.add(listener)
+    return () => {
+      dragActiveStore.listeners.delete(listener)
+    }
+  }, [])
+  return value
+}
+
 function updateDropIndicator(x, y) {
   const target = resolveDropTarget(x, y)
   if (!dropContext.indicator) return
@@ -1475,6 +1499,9 @@ function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
       delete dropContext.sections[categoryId]
     }
   }, [categoryId, rowProps.reorder, rowProps.update, tasks])
+
+  const dragActive = useDragActive()
+  if (!tasks.length && !dragActive) return null
 
   const dropLine = index => jsx('div', {
     'data-drop-line': `${categoryId}-${index}`,
@@ -1660,10 +1687,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.5.1 · Shared with Hermes'
+    ? 'v0.3.0-dev · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.5.1 · Connecting…'
-      : `v0.5.1 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.3.0-dev · Connecting…'
+      : `v0.3.0-dev · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     completeSession: remote.completeSession,
