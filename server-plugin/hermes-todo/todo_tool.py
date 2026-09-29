@@ -10,22 +10,40 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from hermes_todo_store import (
-    BoardError,
-    RevisionConflict,
-    create_subtask,
-    create_task,
-    delete_subtask,
-    get_board,
-    get_history,
-    get_task,
-    reorder_subtask,
-    reorder_task,
-    search_tasks,
-    sort_subtasks,
-    update_subtask,
-    update_task,
-)
+try:
+    from .hermes_todo_store import (
+        BoardError,
+        RevisionConflict,
+        create_subtask,
+        create_task,
+        delete_subtask,
+        get_board,
+        get_history,
+        get_task,
+        reorder_subtask,
+        reorder_task,
+        search_tasks,
+        sort_subtasks,
+        update_subtask,
+        update_task,
+    )
+except ImportError:  # Direct source-tree execution and tests.
+    from hermes_todo_store import (
+        BoardError,
+        RevisionConflict,
+        create_subtask,
+        create_task,
+        delete_subtask,
+        get_board,
+        get_history,
+        get_task,
+        reorder_subtask,
+        reorder_task,
+        search_tasks,
+        sort_subtasks,
+        update_subtask,
+        update_task,
+    )
 
 _CATEGORIES = ["today", "tomorrow", "this-week", "this-month", "soon"]
 _PLANS = ["now", "today", "later"]
@@ -82,6 +100,7 @@ SCHEMA = {
             "waiting_on": {"type": "string", "description": "update: waiting context (cleared with empty string)."},
             "review_date": {"type": "string", "description": "update: review date YYYY-MM-DD."},
             "blocker": {"type": "string", "description": "update: blocking reason (cleared with empty string)."},
+            "artefacts": {"type": "array", "items": {"type": "string"}, "description": "create/update: durable output paths or links, max 20."},
             "closure_note": {"type": "string", "description": "done: what was delivered."},
             "evidence": {"type": "array", "items": {"type": "string"}, "description": "done: verification paths or links."},
             "expected_revision": {"type": "integer", "description": "Optimistic concurrency guard from a previous read."},
@@ -134,7 +153,7 @@ def _apply(args: dict[str, Any]) -> dict[str, Any]:
         ("project", "project"), ("owner", "owner"), ("brief", "brief"),
         ("next_action", "nextAction"), ("closure_condition", "closureCondition"),
         ("waiting_on", "waitingOn"), ("review_date", "reviewDate"),
-        ("blocker", "blocker"),
+        ("blocker", "blocker"), ("artefacts", "artefacts"),
     )
     if action == "create":
         if not args.get("title"):
