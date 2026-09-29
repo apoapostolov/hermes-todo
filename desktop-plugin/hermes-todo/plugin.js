@@ -1364,10 +1364,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.2.0+categories · Shared with Hermes'
+    ? 'v0.3.0 · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.2.0+categories · Connecting…'
-      : `v0.2.0+categories · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.3.0 · Connecting…'
+      : `v0.3.0 · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     completeSession: remote.completeSession,
