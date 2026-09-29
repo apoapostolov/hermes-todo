@@ -150,6 +150,13 @@ function resolveDropTarget(x, y) {
       return { categoryId: 'now', index: 0 }
     }
   }
+  const inboxHost = document.querySelector('[data-todo-inbox]')
+  if (inboxHost) {
+    const rect = inboxHost.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      return { categoryId: 'inbox', index: 0 }
+    }
+  }
   const sections = document.querySelectorAll('[data-todo-category]')
   for (const section of sections) {
     const rect = section.getBoundingClientRect()
@@ -179,6 +186,16 @@ function dropTaskAt(task, x, y) {
     if (task.plan === 'now' && task.status === 'open' && !task.inbox) return
     const changes = { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }
     dropContext.update(task.id, changes)
+    return
+  }
+  if (target.categoryId === 'inbox') {
+    if (!dropContext.update) return
+    if (task.inbox) return
+    if (task.status !== 'open' || task.plan === 'now') {
+      dropContext.update(task.id, { inbox: true, plan: 'later', status: 'open', waitingOn: null, reviewDate: null, blocker: null })
+    } else {
+      dropContext.update(task.id, { inbox: true, plan: 'later' })
+    }
     return
   }
   if (task.inbox || task.plan === 'now') {
@@ -1547,9 +1564,12 @@ function BoardView({ remote, rowProps, sections }) {
       jsx(Section, {
         count: sections.inbox.length,
         title: 'Inbox',
-        children: sections.inbox.length
-          ? sections.inbox.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
-          : jsx('div', { className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Captured tasks wait here until you start or plan them.' })
+        children: jsx('div', {
+          'data-todo-inbox': '1',
+          children: sections.inbox.length
+            ? sections.inbox.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), task }, task.id))
+            : jsx('div', { className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'Captured tasks wait here until you start or plan them. Drop tasks here to park them.' })
+        })
       }),
       jsx(Section, {
         count: sections.now.length,
