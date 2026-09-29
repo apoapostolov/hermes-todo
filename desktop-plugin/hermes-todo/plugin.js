@@ -1754,7 +1754,7 @@ function TodoPane({ ctx }) {
             children: [
               jsx(Input, {
                 'aria-label': 'Capture a task to Inbox',
-                className: 'min-w-0 flex-1',
+                className: 'min-w-0 flex-1 border border-(--ui-stroke-secondary)',
                 disabled: remote.connection === 'offline',
                 maxLength: 500,
                 onChange: event => setDraft(event.target.value),
