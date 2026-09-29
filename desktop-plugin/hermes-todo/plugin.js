@@ -1735,20 +1735,20 @@ function TodoPane({ ctx }) {
         className: 'border-b border-(--ui-stroke-secondary) px-3 py-3',
         children: [
           jsxs('div', {
-            className: 'flex items-start justify-between gap-3',
+            style: { display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', columnGap: 12 },
             children: [
               jsxs('div', {
+                className: 'flex items-baseline gap-1.5',
                 children: [
-                  jsx('h2', { className: 'text-sm font-semibold text-(--ui-text-primary)', children: 'Todo' }),
-                  jsx('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-quaternary)', children: dateLabel })
+                  jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-quaternary)', children: 'open' }),
+                  jsx('span', { className: 'text-lg font-semibold tabular-nums leading-none text-(--ui-text-primary)', children: openCount })
                 ]
               }),
-              jsxs('div', {
-                className: 'text-right',
-                children: [
-                  jsx('div', { className: 'text-xs font-medium tabular-nums text-(--ui-text-secondary)', children: openCount }),
-                  jsx('div', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: 'open' })
-                ]
+              jsx('h2', { className: 'text-sm font-semibold text-(--ui-text-primary)', children: 'Todo' }),
+              jsx('span', {
+                className: 'text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)',
+                style: { justifySelf: 'end' },
+                children: dateLabel
               })
             ]
           }),
