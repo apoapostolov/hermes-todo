@@ -77,7 +77,103 @@ function makeId() {
   return `task-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-const dragTaskCategory = { task: null }
+const dragPointerState = {
+  task: null,
+  startX: 0,
+  startY: 0,
+  active: false,
+  pointerId: null,
+  ghost: null,
+  offsetX: 0,
+  offsetY: 0,
+  cleanup: null
+}
+const DRAG_THRESHOLD_PX = 6
+
+function beginPointerDrag(state, event) {
+  state.active = true
+  document.body.style.userSelect = 'none'
+  const ghost = document.createElement('div')
+  ghost.textContent = state.task.title
+  ghost.style.cssText =
+    'position:fixed;z-index:9999;pointer-events:none;max-width:260px;padding:4px 10px;' +
+    'border-radius:6px;font-size:12px;line-height:18px;background:var(--ui-bg-elevated,#1f2937);' +
+    'color:var(--ui-text-primary,#e5e7eb);border:1px solid var(--ui-stroke-secondary,#374151);' +
+    'box-shadow:0 8px 24px rgba(0,0,0,0.35);opacity:0.95'
+  ghost.style.left = `${event.clientX - state.offsetX}px`
+  ghost.style.top = `${event.clientY - state.offsetY}px`
+  document.body.appendChild(ghost)
+  state.ghost = ghost
+
+  const onMove = moveEvent => {
+    if (moveEvent.pointerId !== state.pointerId) return
+    ghost.style.left = `${moveEvent.clientX - state.offsetX}px`
+    ghost.style.top = `${moveEvent.clientY - state.offsetY}px`
+    updateDropIndicator(moveEvent.clientX, moveEvent.clientY)
+  }
+  const finish = (upEvent, commit) => {
+    if (upEvent && upEvent.pointerId !== state.pointerId) return
+    window.removeEventListener('pointermove', onMove, true)
+    window.removeEventListener('pointerup', onUp, true)
+    window.removeEventListener('keydown', onKey, true)
+    document.body.style.userSelect = ''
+    if (ghost.parentNode) ghost.parentNode.removeChild(ghost)
+    clearDropIndicator()
+    const task = state.task
+    const x = upEvent ? upEvent.clientX : 0
+    const y = upEvent ? upEvent.clientY : 0
+    state.task = null
+    state.active = false
+    state.pointerId = null
+    state.ghost = null
+    if (commit && task) dropTaskAt(task, x, y)
+  }
+  const onUp = upEvent => finish(upEvent, true)
+  const onKey = keyEvent => {
+    if (keyEvent.key === 'Escape') finish(keyEvent, false)
+  }
+  window.addEventListener('pointermove', onMove, true)
+  window.addEventListener('pointerup', onUp, true)
+  window.addEventListener('keydown', onKey, true)
+}
+
+
+// Drop-target hit testing: find the drop category + index under the pointer
+function resolveDropTarget(x, y) {
+  const sections = document.querySelectorAll('[data-todo-category]')
+  for (const section of sections) {
+    const rect = section.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      const categoryId = section.getAttribute('data-todo-category')
+      const rows = section.querySelectorAll('[data-todo-task]')
+      let index = rows.length
+      for (let i = 0; i < rows.length; i += 1) {
+        const rowRect = rows[i].getBoundingClientRect()
+        if (y < rowRect.top + rowRect.height / 2) {
+          index = i
+          break
+        }
+      }
+      return { categoryId, index }
+    }
+  }
+  return null
+}
+
+function dropTaskAt(task, x, y) {
+  const target = resolveDropTarget(x, y)
+  if (!target) return
+  if (!dropContext || !dropContext.reorder) return
+  const siblings = (dropContext.sections[target.categoryId] || []).filter(item => item.id !== task.id)
+  const clamped = Math.max(0, Math.min(target.index, siblings.length))
+  const before = siblings[clamped]
+  const after = siblings[clamped - 1]
+  if (task.category === target.categoryId && !before && !after) return
+  const payload = { category: target.categoryId }
+  if (before) payload.beforeId = before.id
+  if (after) payload.afterId = after.id
+  dropContext.reorder(task.id, payload)
+}
 
 function legacyDimensions(lane) {
   if (lane === 'now') return { plan: 'now', status: 'open' }
@@ -1110,24 +1206,54 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
   const due = dueLabel(task)
   const draggable = task.status !== 'done' && task.plan !== 'now' && !task.inbox
 
+  const handlePointerDown = event => {
+    if (!draggable) return
+    if (event.button !== 0) return
+    const target = event.target
+    if (target.closest('button, a, input, textarea, select, [contenteditable]')) return
+    dragPointerState.task = task
+    dragPointerState.startX = event.clientX
+    dragPointerState.startY = event.clientY
+    dragPointerState.pointerId = event.pointerId
+    const row = event.currentTarget.getBoundingClientRect()
+    dragPointerState.offsetX = Math.min(40, event.clientX - row.left)
+    dragPointerState.offsetY = 12
+    if (dragPointerState.cleanup) dragPointerState.cleanup()
+    let armed = false
+    const onMove = moveEvent => {
+      if (moveEvent.pointerId !== dragPointerState.pointerId) return
+      const dx = moveEvent.clientX - dragPointerState.startX
+      const dy = moveEvent.clientY - dragPointerState.startY
+      if (!armed && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+        armed = true
+        beginPointerDrag(dragPointerState, moveEvent)
+      }
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      dragPointerState.cleanup = null
+      if (!armed) {
+        dragPointerState.task = null
+        dragPointerState.pointerId = null
+      }
+    }
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+    dragPointerState.cleanup = () => {
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+    }
+  }
+
   return jsxs('div', {
     className: cn(
       'group w-full min-w-0 max-w-full overflow-hidden border-b border-(--ui-stroke-secondary) py-2 last:border-b-0',
-      prominent && 'border-l-2 pl-2.5'
+      prominent && 'border-l-2 pl-2.5',
+      draggable && 'cursor-grab active:cursor-grabbing'
     ),
     style: prominent ? { borderLeftColor: 'var(--ui-accent)' } : undefined,
-    draggable,
-    onDragStart: event => {
-      if (!draggable) return
-      dragTaskCategory.task = task
-      try {
-        event.dataTransfer.setData('text/plain', task.id)
-      } catch {}
-      event.dataTransfer.effectAllowed = 'move'
-    },
-    onDragEnd: () => {
-      dragTaskCategory.task = null
-    },
+    onPointerDown: handlePointerDown,
     children: [
       jsxs('div', {
         className: 'flex min-w-0 items-start gap-2',
@@ -1249,50 +1375,50 @@ function CollapsibleSection(props) {
 
 const CATEGORY_ORDER = ['today', 'tomorrow', 'this-week', 'this-month', 'soon']
 
-function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
-  const [dropIndex, setDropIndex] = useState(null)
-  const sectionRef = useRef(null)
+let dropContext = { sections: {}, reorder: null, indicator: null }
 
-  const clearDrop = () => setDropIndex(null)
-
-  const handleDrop = event => {
-    event.preventDefault()
-    const dragged = dragTaskCategory.task
-    dragTaskCategory.task = null
-    const index = dropIndex
-    clearDrop()
-    if (!dragged || index === null) return
-    const siblings = tasks.filter(task => task.id !== dragged.id)
-    const clamped = Math.max(0, Math.min(index, siblings.length))
-    const before = siblings[clamped]
-    const after = siblings[clamped - 1]
-    const sameSpot =
-      dragged.category === categoryId &&
-      ((before && dragged.id === before.id) || (after && dragged.id === after.id))
-    if (sameSpot) return
-    const target = { category: categoryId }
-    if (before) target.beforeId = before.id
-    if (after) target.afterId = after.id
-    rowProps.reorder(dragged.id, target)
+function updateDropIndicator(x, y) {
+  const target = resolveDropTarget(x, y)
+  if (!dropContext.indicator) return
+  if (!target) {
+    clearDropIndicator()
+    return
   }
+  const { categoryId, index } = target
+  const line = document.querySelector(`[data-drop-line="${categoryId}-${index}"]`)
+  if (dropContext.indicator === line) return
+  if (dropContext.indicator) dropContext.indicator.style.opacity = '0'
+  if (line) {
+    line.style.opacity = '1'
+    dropContext.indicator = line
+  } else {
+    dropContext.indicator = null
+  }
+}
+
+function clearDropIndicator() {
+  if (dropContext.indicator) dropContext.indicator.style.opacity = '0'
+  dropContext.indicator = null
+}
+
+function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
+  useEffect(() => {
+    dropContext.sections[categoryId] = tasks
+    dropContext.reorder = rowProps.reorder
+    return () => {
+      delete dropContext.sections[categoryId]
+    }
+  }, [categoryId, rowProps.reorder, tasks])
 
   const dropLine = index => jsx('div', {
-    className: cn(
-      'pointer-events-none h-0.5 rounded-full bg-(--ui-accent) transition-opacity',
-      dropIndex === index ? 'opacity-100' : 'opacity-0'
-    )
+    'data-drop-line': `${categoryId}-${index}`,
+    className: 'pointer-events-none h-0.5 rounded-full bg-(--ui-accent)',
+    style: { opacity: 0, transition: 'opacity 80ms linear' }
   }, `drop-${categoryId}-${index}`)
 
   return jsxs('section', {
-    ref: sectionRef,
+    'data-todo-category': categoryId,
     className: 'mt-4 min-w-0 max-w-full first:mt-0',
-    onDragOver: event => {
-      if (!dragTaskCategory.task) return
-      event.preventDefault()
-      event.dataTransfer.dropEffect = 'move'
-    },
-    onDrop: handleDrop,
-    onDragEnd: clearDrop,
     children: [
       jsxs('div', {
         className: 'mb-1.5 flex items-baseline justify-between gap-2',
@@ -1304,15 +1430,7 @@ function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
       dropLine(0),
       tasks.length
         ? tasks.map((task, index) => jsxs('div', {
-            onDragOver: event => {
-              if (!dragTaskCategory.task) return
-              event.preventDefault()
-              event.stopPropagation()
-              event.dataTransfer.dropEffect = 'move'
-              const rect = event.currentTarget.getBoundingClientRect()
-              const inTopHalf = event.clientY - rect.top < rect.height / 2
-              setDropIndex(inTopHalf ? index : index + 1)
-            },
+            'data-todo-task': task.id,
             children: [
               jsx(TaskRow, { ...rowProps, pending: pendingIds.has(task.id), task }, task.id),
               dropLine(index + 1)
@@ -1473,10 +1591,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.4.0 · Shared with Hermes'
+    ? 'v0.4.1 · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.4.0 · Connecting…'
-      : `v0.4.0 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.4.1 · Connecting…'
+      : `v0.4.1 · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     completeSession: remote.completeSession,
