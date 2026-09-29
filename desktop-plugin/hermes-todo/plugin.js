@@ -1338,7 +1338,7 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                   'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
                   due?.startsWith('Overdue') && 'font-medium text-(--ui-text-secondary)'
                 ),
-                children: [reason, task.inbox ? 'Inbox' : null, due, task.project, task.owner, task.priority ? `P${task.priority}` : null, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
+                children: [reason, task.inbox ? 'Inbox' : null, due, `${task.estimate}m`, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
               })
             ]
           }),
@@ -1660,10 +1660,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.5.0 · Shared with Hermes'
+    ? 'v0.5.1 · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.5.0 · Connecting…'
-      : `v0.5.0 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.5.1 · Connecting…'
+      : `v0.5.1 · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     completeSession: remote.completeSession,
