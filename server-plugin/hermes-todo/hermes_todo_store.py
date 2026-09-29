@@ -42,7 +42,10 @@ MAX_SOURCE_PAYLOAD_BYTES = 64 * 1024
 MAX_EVENT_DATA_BYTES = 64 * 1024
 MAX_ARTEFACTS = 20
 MAX_ARTEFACT_LENGTH = 1000
-SCHEMA_VERSION = 6
+MAX_SUBTASKS = 200
+MAX_SUBTASK_TITLE = 500
+SUBTASK_POSITION_STEP = 1024.0
+SCHEMA_VERSION = 7
 _UNSET = object()
 
 
@@ -161,6 +164,18 @@ def _create_v4_support(conn: sqlite3.Connection) -> None:
         )""",
         """CREATE INDEX IF NOT EXISTS idx_task_events_task_created
         ON task_events(task_id, created_at, id)""",
+        """CREATE TABLE IF NOT EXISTS subtasks (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+            position REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_subtasks_task_position
+        ON subtasks(task_id, position, id)""",
     )
     for statement in statements:
         conn.execute(statement)
@@ -639,6 +654,45 @@ def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _row_to_subtask(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "taskId": row["task_id"],
+        "title": row["title"],
+        "done": bool(row["done"]),
+        "position": float(row["position"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "completedAt": row["completed_at"],
+    }
+
+
+def _subtasks_for(conn: sqlite3.Connection, task_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM subtasks WHERE task_id = ? ORDER BY position, id",
+        (task_id,),
+    ).fetchall()
+    return [_row_to_subtask(row) for row in rows]
+
+
+def _attach_subtasks(conn: sqlite3.Connection, tasks: list[dict[str, Any]]) -> None:
+    if not tasks:
+        return
+    ids = [str(task["id"]) for task in tasks]
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT * FROM subtasks WHERE task_id IN ({placeholders}) ORDER BY position, id",
+        ids,
+    ).fetchall()
+    grouped: dict[str, list[dict[str, Any]]] = {task_id: [] for task_id in ids}
+    for row in rows:
+        grouped[str(row["task_id"])].append(_row_to_subtask(row))
+    for task in tasks:
+        task["subtasks"] = grouped.get(str(task["id"]), [])
+        task["subtaskCount"] = len(task["subtasks"])
+        task["subtaskDoneCount"] = sum(1 for item in task["subtasks"] if item["done"])
+
+
 def _revision(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT value FROM board_meta WHERE key = 'revision'").fetchone()
     return int(row["value"] if row else 0)
@@ -657,10 +711,12 @@ def _read_board(conn: sqlite3.Connection) -> dict[str, Any]:
             id
         """
     ).fetchall()
+    tasks = [_row_to_task(row) for row in rows]
+    _attach_subtasks(conn, tasks)
     return {
         "version": SCHEMA_VERSION,
         "revision": _revision(conn),
-        "tasks": [_row_to_task(row) for row in rows],
+        "tasks": tasks,
     }
 
 
@@ -719,16 +775,20 @@ def _task_result(
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if row is None:
         raise KeyError(task_id)
+    task = _row_to_task(row)
+    _attach_subtasks(conn, [task])
     result: dict[str, Any] = {
         "version": SCHEMA_VERSION,
         "revision": _revision(conn),
-        "task": _row_to_task(row),
+        "task": task,
     }
     affected = []
     for affected_id in affected_ids:
         affected_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (affected_id,)).fetchone()
         if affected_row is not None:
-            affected.append(_row_to_task(affected_row))
+            affected_task = _row_to_task(affected_row)
+            _attach_subtasks(conn, [affected_task])
+            affected.append(affected_task)
     if affected:
         result["affectedTasks"] = affected
     if extras:
@@ -751,6 +811,8 @@ def _return_mutation(
             "skipped",
             "created",
             "deletedId",
+            "deletedSubtaskId",
+            "subtask",
         ):
             if key in result:
                 board[key] = result[key]
@@ -768,10 +830,12 @@ def get_task(task_id: str) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:
             raise KeyError(task_id)
+        task = _row_to_task(row)
+        _attach_subtasks(conn, [task])
         return {
             "version": SCHEMA_VERSION,
             "revision": _revision(conn),
-            "task": _row_to_task(row),
+            "task": task,
         }
 
 
@@ -1489,6 +1553,18 @@ def _generate_next_occurrence(
         "completed_at": None,
     }
     _insert_values(conn, values)
+    open_subtasks = conn.execute(
+        "SELECT title FROM subtasks WHERE task_id = ? AND done = 0 ORDER BY position, id",
+        (row["id"],),
+    ).fetchall()
+    for index, item in enumerate(open_subtasks, start=1):
+        conn.execute(
+            """
+            INSERT INTO subtasks(id, task_id, title, done, position, created_at, updated_at, completed_at)
+            VALUES (?, ?, ?, 0, ?, ?, ?, NULL)
+            """,
+            (uuid.uuid4().hex, values["id"], item["title"], index * SUBTASK_POSITION_STEP, now, now),
+        )
     _append_event(
         conn,
         values["id"],
@@ -1602,6 +1678,7 @@ def delete_task(
         if row is None:
             raise KeyError(task_id)
         _append_event(conn, task_id, "task.deleted", actor=actor, source=event_source)
+        conn.execute("DELETE FROM subtasks WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         _bump_revision(conn)
         result = {
@@ -1609,6 +1686,332 @@ def delete_task(
             "revision": _revision(conn),
             "deletedId": task_id,
         }
+        conn.commit()
+        return _return_mutation(conn, result, return_board)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _next_subtask_position(conn: sqlite3.Connection, task_id: str) -> float:
+    row = conn.execute("SELECT MAX(position) FROM subtasks WHERE task_id = ?", (task_id,)).fetchone()
+    max_position = float(row[0]) if row and row[0] is not None else 0.0
+    return max_position + SUBTASK_POSITION_STEP
+
+
+def _subtask_insert_bounds(
+    conn: sqlite3.Connection,
+    task_id: str,
+    subtask_id: str,
+    before: sqlite3.Row | None,
+    after: sqlite3.Row | None,
+) -> tuple[float, float]:
+    if before is not None:
+        upper = float(before["position"])
+        row = conn.execute(
+            "SELECT MAX(position) FROM subtasks WHERE task_id = ? AND position < ? AND id <> ?",
+            (task_id, upper, before["id"]),
+        ).fetchone()
+        lower = float(row[0]) if row and row[0] is not None else upper - SUBTASK_POSITION_STEP
+        return lower, upper
+    if after is not None:
+        lower = float(after["position"])
+        row = conn.execute(
+            "SELECT MIN(position) FROM subtasks WHERE task_id = ? AND position > ? AND id <> ?",
+            (task_id, lower, after["id"]),
+        ).fetchone()
+        upper = float(row[0]) if row and row[0] is not None else lower + SUBTASK_POSITION_STEP
+        return lower, upper
+    row = conn.execute(
+        "SELECT MAX(position) FROM subtasks WHERE task_id = ? AND id <> ?",
+        (task_id, subtask_id),
+    ).fetchone()
+    lower = float(row[0]) if row and row[0] is not None else 0.0
+    return lower, lower + SUBTASK_POSITION_STEP
+
+
+def _rebalance_subtasks(conn: sqlite3.Connection, task_id: str) -> None:
+    rows = conn.execute(
+        "SELECT id FROM subtasks WHERE task_id = ? ORDER BY position, id",
+        (task_id,),
+    ).fetchall()
+    now = _utc_now()
+    for index, row in enumerate(rows, start=1):
+        conn.execute(
+            "UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ?",
+            (index * SUBTASK_POSITION_STEP, now, row["id"]),
+        )
+
+
+def create_subtask(
+    task_id: str,
+    title: str,
+    *,
+    done: bool = False,
+    expected_revision: int | None = None,
+    actor: str | None = None,
+    event_source: str = "store",
+    return_board: bool = True,
+) -> dict[str, Any]:
+    clean_title = _clean_title(title)
+    done = _clean_bool(done, "Done")
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _check_expected_revision(conn, expected_revision)
+        parent = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if parent is None:
+            raise KeyError(task_id)
+        count = int(conn.execute("SELECT COUNT(*) FROM subtasks WHERE task_id = ?", (task_id,)).fetchone()[0])
+        if count >= MAX_SUBTASKS:
+            raise BoardError(f"A task may have at most {MAX_SUBTASKS} subtasks")
+        now = _utc_now()
+        subtask_id = uuid.uuid4().hex
+        conn.execute(
+            """
+            INSERT INTO subtasks(id, task_id, title, done, position, created_at, updated_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                subtask_id,
+                task_id,
+                clean_title,
+                1 if done else 0,
+                _next_subtask_position(conn, task_id),
+                now,
+                now,
+                now if done else None,
+            ),
+        )
+        _append_event(
+            conn, task_id, "subtask.created",
+            data={"subtaskId": subtask_id, "title": clean_title, "done": done},
+            actor=actor, source=event_source, created_at=now,
+        )
+        conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now, task_id))
+        _bump_revision(conn)
+        result = _task_result(conn, task_id)
+        result["subtask"] = next(item for item in result["task"]["subtasks"] if item["id"] == subtask_id)
+        conn.commit()
+        return _return_mutation(conn, result, return_board)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_subtask(
+    task_id: str,
+    subtask_id: str,
+    *,
+    title: str | None = None,
+    done: bool | None = None,
+    expected_revision: int | None = None,
+    actor: str | None = None,
+    event_source: str = "store",
+    return_board: bool = True,
+) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _check_expected_revision(conn, expected_revision)
+        existing = conn.execute(
+            "SELECT * FROM subtasks WHERE id = ? AND task_id = ?",
+            (subtask_id, task_id),
+        ).fetchone()
+        if existing is None:
+            raise KeyError(subtask_id)
+        now = _utc_now()
+        updates: dict[str, Any] = {"updated_at": now}
+        event_data: dict[str, Any] = {"subtaskId": subtask_id}
+        if title is not None:
+            updates["title"] = _clean_title(title)
+            event_data["title"] = updates["title"]
+        if done is not None:
+            clean_done = _clean_bool(done, "Done")
+            updates["done"] = 1 if clean_done else 0
+            updates["completed_at"] = now if clean_done else None
+            event_data["done"] = clean_done
+        if len(updates) == 1:
+            result = _task_result(conn, task_id)
+            conn.commit()
+            return _return_mutation(conn, result, return_board)
+        assignments = [f"{column} = ?" for column in updates]
+        conn.execute(
+            f"UPDATE subtasks SET {', '.join(assignments)} WHERE id = ?",
+            [*updates.values(), subtask_id],
+        )
+        event_type = "subtask.completed" if updates.get("done") == 1 else (
+            "subtask.reopened" if updates.get("done") == 0 else "subtask.updated"
+        )
+        _append_event(conn, task_id, event_type, data=event_data, actor=actor, source=event_source, created_at=now)
+        conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now, task_id))
+        _bump_revision(conn)
+        result = _task_result(conn, task_id)
+        conn.commit()
+        return _return_mutation(conn, result, return_board)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def delete_subtask(
+    task_id: str,
+    subtask_id: str,
+    *,
+    expected_revision: int | None = None,
+    actor: str | None = None,
+    event_source: str = "store",
+    return_board: bool = True,
+) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _check_expected_revision(conn, expected_revision)
+        existing = conn.execute(
+            "SELECT id FROM subtasks WHERE id = ? AND task_id = ?",
+            (subtask_id, task_id),
+        ).fetchone()
+        if existing is None:
+            raise KeyError(subtask_id)
+        now = _utc_now()
+        conn.execute("DELETE FROM subtasks WHERE id = ?", (subtask_id,))
+        _append_event(
+            conn, task_id, "subtask.deleted",
+            data={"subtaskId": subtask_id},
+            actor=actor, source=event_source, created_at=now,
+        )
+        conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now, task_id))
+        _bump_revision(conn)
+        result = _task_result(conn, task_id)
+        result["deletedSubtaskId"] = subtask_id
+        conn.commit()
+        return _return_mutation(conn, result, return_board)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def reorder_subtask(
+    task_id: str,
+    subtask_id: str,
+    *,
+    before_id: str | None = None,
+    after_id: str | None = None,
+    expected_revision: int | None = None,
+    actor: str | None = None,
+    event_source: str = "store",
+    return_board: bool = True,
+) -> dict[str, Any]:
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _check_expected_revision(conn, expected_revision)
+        existing = conn.execute(
+            "SELECT * FROM subtasks WHERE id = ? AND task_id = ?",
+            (subtask_id, task_id),
+        ).fetchone()
+        if existing is None:
+            raise KeyError(subtask_id)
+        before = None
+        after = None
+        if before_id:
+            before = conn.execute(
+                "SELECT id, position FROM subtasks WHERE id = ? AND task_id = ?",
+                (before_id, task_id),
+            ).fetchone()
+            if before is None:
+                raise BoardError(f"Unknown before subtask: {before_id}")
+        if after_id:
+            after = conn.execute(
+                "SELECT id, position FROM subtasks WHERE id = ? AND task_id = ?",
+                (after_id, task_id),
+            ).fetchone()
+            if after is None:
+                raise BoardError(f"Unknown after subtask: {after_id}")
+        lower, upper = _subtask_insert_bounds(conn, task_id, subtask_id, before, after)
+        new_position = (lower + upper) / 2.0
+        if not POSITION_MIN < new_position < POSITION_MAX or new_position == float(existing["position"]):
+            _rebalance_subtasks(conn, task_id)
+            if before is not None:
+                before = conn.execute(
+                    "SELECT id, position FROM subtasks WHERE id = ?", (before["id"],)
+                ).fetchone()
+            if after is not None:
+                after = conn.execute(
+                    "SELECT id, position FROM subtasks WHERE id = ?", (after["id"],)
+                ).fetchone()
+            existing = conn.execute(
+                "SELECT * FROM subtasks WHERE id = ?", (subtask_id,)
+            ).fetchone()
+            lower, upper = _subtask_insert_bounds(conn, task_id, subtask_id, before, after)
+            new_position = (lower + upper) / 2.0
+        now = _utc_now()
+        conn.execute(
+            "UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ?",
+            (new_position, now, subtask_id),
+        )
+        _append_event(
+            conn, task_id, "subtask.reordered",
+            data={"subtaskId": subtask_id, "from": float(existing["position"]), "to": new_position},
+            actor=actor, source=event_source, created_at=now,
+        )
+        conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now, task_id))
+        _bump_revision(conn)
+        result = _task_result(conn, task_id)
+        conn.commit()
+        return _return_mutation(conn, result, return_board)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def sort_subtasks(
+    task_id: str,
+    *,
+    expected_revision: int | None = None,
+    actor: str | None = None,
+    event_source: str = "store",
+    return_board: bool = True,
+) -> dict[str, Any]:
+    """Incomplete first, complete last, keeping relative order inside each group."""
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _check_expected_revision(conn, expected_revision)
+        parent = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if parent is None:
+            raise KeyError(task_id)
+        rows = conn.execute(
+            """
+            SELECT id FROM subtasks WHERE task_id = ?
+            ORDER BY done, position, id
+            """,
+            (task_id,),
+        ).fetchall()
+        now = _utc_now()
+        for index, row in enumerate(rows, start=1):
+            conn.execute(
+                "UPDATE subtasks SET position = ?, updated_at = ? WHERE id = ?",
+                (index * SUBTASK_POSITION_STEP, now, row["id"]),
+            )
+        _append_event(
+            conn, task_id, "subtask.sorted",
+            data={"order": "incomplete-first"},
+            actor=actor, source=event_source, created_at=now,
+        )
+        conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now, task_id))
+        _bump_revision(conn)
+        result = _task_result(conn, task_id)
         conn.commit()
         return _return_mutation(conn, result, return_board)
     except Exception:
@@ -1697,6 +2100,12 @@ def search_tasks(
                     "blocker", "closureCondition", "closureNote",
                 )
             ).casefold()
+            if needle:
+                _attach_subtasks(conn, [task])
+                haystack = " ".join(
+                    [haystack]
+                    + [str(item.get("title") or "") for item in task.get("subtasks") or []]
+                ).casefold()
             if needle and needle not in haystack:
                 continue
             if clean_plan and task["plan"] != clean_plan:
@@ -1712,6 +2121,7 @@ def search_tasks(
             if inbox is not None and task["inbox"] is not inbox:
                 continue
             matched.append(task)
+        _attach_subtasks(conn, matched[:limit])
         return {
             "version": SCHEMA_VERSION,
             "revision": _revision(conn),
