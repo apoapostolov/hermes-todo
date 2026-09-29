@@ -1356,9 +1356,9 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
                 className: 'mt-0.5 line-clamp-2 break-words text-[0.625rem] leading-4 text-(--ui-text-tertiary)',
                 children: task.brief.replace(/\s+/g, ' ').trim()
               }),
-              (reason || task.project || task.owner || task.nextAction || task.recurrence || task.inbox) && jsx('div', {
+              (reason || task.project || task.owner || task.nextAction || task.recurrence) && jsx('div', {
                 className: 'mt-0.5 truncate text-[0.625rem] text-(--ui-text-quaternary)',
-                children: [reason, task.inbox ? 'Inbox' : null, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
+                children: [reason, task.project, task.owner, task.nextAction, task.recurrenceRule || task.recurrence].filter(Boolean).join(' · ')
               })
             ]
           }),
