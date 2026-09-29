@@ -1737,18 +1737,14 @@ function TodoPane({ ctx }) {
           jsxs('div', {
             style: { display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', columnGap: 12 },
             children: [
+              jsx('h2', { className: 'text-sm font-semibold text-(--ui-text-primary)', children: 'Todo' }),
+              jsx('span', { className: 'text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', children: dateLabel }),
               jsxs('div', {
-                className: 'flex items-baseline gap-1.5',
+                className: 'flex items-baseline justify-end gap-1.5',
                 children: [
                   jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-quaternary)', children: 'open' }),
                   jsx('span', { className: 'text-lg font-semibold tabular-nums leading-none text-(--ui-text-primary)', children: openCount })
                 ]
-              }),
-              jsx('h2', { className: 'text-sm font-semibold text-(--ui-text-primary)', children: 'Todo' }),
-              jsx('span', {
-                className: 'text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)',
-                style: { justifySelf: 'end' },
-                children: dateLabel
               })
             ]
           }),
