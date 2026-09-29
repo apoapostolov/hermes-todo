@@ -45,6 +45,7 @@ function buildWorkPrompt(task) {
     task.project ? `Project: ${task.project}` : null,
     `Plan: ${task.plan}`,
     `Status: ${task.status}`,
+    task.category ? `Category: ${task.category}` : null,
     `Working estimate: ${task.estimate} minutes`,
     task.priority ? `Priority: P${task.priority}` : null,
     task.dueDate ? `Due date: ${task.dueDate}` : null,
@@ -140,6 +141,13 @@ function beginPointerDrag(state, event) {
 
 // Drop-target hit testing: find the drop category + index under the pointer
 function resolveDropTarget(x, y) {
+  const nowHost = document.querySelector('[data-todo-now]')
+  if (nowHost) {
+    const rect = nowHost.getBoundingClientRect()
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      return { categoryId: 'now', index: 0 }
+    }
+  }
   const sections = document.querySelectorAll('[data-todo-category]')
   for (const section of sections) {
     const rect = section.getBoundingClientRect()
@@ -164,6 +172,13 @@ function dropTaskAt(task, x, y) {
   const target = resolveDropTarget(x, y)
   if (!target) return
   if (!dropContext) return
+  if (target.categoryId === 'now') {
+    if (!dropContext.update) return
+    if (task.plan === 'now' && task.status === 'open' && !task.inbox) return
+    const changes = { plan: 'now', status: 'open', inbox: false, waitingOn: null, reviewDate: null, blocker: null }
+    dropContext.update(task.id, changes)
+    return
+  }
   if (task.inbox || task.plan === 'now') {
     if (!dropContext.update) return
     const changes = { category: target.categoryId, inbox: false }
@@ -1053,8 +1068,27 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
       jsxs('div', {
         className: 'mb-1 flex gap-1',
         children: [
-          jsx(ChoiceButton, { active: dueMode === 'date', disabled, onClick: () => setDueMode('date'), children: 'All day' }),
-          jsx(ChoiceButton, { active: dueMode === 'timed', disabled, onClick: () => setDueMode('timed'), children: 'Timed' })
+          jsx(ChoiceButton, {
+            active: dueMode === 'date',
+            disabled,
+            onClick: () => {
+              if (dueMode === 'date') return
+              setDueMode('date')
+              const carried = (timedDraft || '').slice(0, 10)
+              if (/^\d{4}-\d{2}-\d{2}$/.test(carried)) setDueDraft(carried)
+            },
+            children: 'All day'
+          }),
+          jsx(ChoiceButton, {
+            active: dueMode === 'timed',
+            disabled,
+            onClick: () => {
+              if (dueMode === 'timed') return
+              setDueMode('timed')
+              if (!timedDraft && /^\d{4}-\d{2}-\d{2}$/.test(dueDraft || '')) setTimedDraft(`${dueDraft}T12:00`)
+            },
+            children: 'Timed'
+          })
         ]
       }),
       dueMode === 'timed'
@@ -1208,6 +1242,26 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
   })
 }
 
+const PRIORITY_PILL = {
+  1: { label: 'P1', background: 'color-mix(in srgb, #ef4444 22%, transparent)', color: '#f87171', border: '#ef4444' },
+  2: { label: 'P2', background: 'color-mix(in srgb, #f59e0b 22%, transparent)', color: '#fbbf24', border: '#f59e0b' },
+  3: { label: 'P3', background: 'color-mix(in srgb, #3b82f6 22%, transparent)', color: '#60a5fa', border: '#3b82f6' }
+}
+
+function PriorityPill({ priority }) {
+  const style = PRIORITY_PILL[priority]
+  if (!style) return null
+  return jsx('span', {
+    className: 'mr-1.5 inline-flex shrink-0 items-center rounded-full border px-1.5 text-[0.5625rem] font-semibold uppercase leading-[14px]',
+    style: {
+      background: style.background,
+      color: style.color,
+      borderColor: 'color-mix(in srgb, ' + style.border + ' 45%, transparent)'
+    },
+    children: style.label
+  })
+}
+
 function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pending, workingId, workWithHermes, prominent = false, reason }) {
   const [editing, setEditing] = useState(false)
   const disabled = pending || workingId === task.id
@@ -1269,12 +1323,15 @@ function TaskRow({ ctx, task, update, remove, completeSession, cycleEstimate, pe
           jsxs('div', {
             className: 'min-w-0 flex-1',
             children: [
-              jsx('div', {
+              jsxs('div', {
                 className: cn(
                   'break-words [overflow-wrap:anywhere] text-xs leading-5 text-(--ui-text-primary)',
                   task.status === 'done' && 'text-(--ui-text-quaternary) line-through'
                 ),
-                children: task.title
+                children: [
+                  task.priority && task.priority <= 3 ? jsx(PriorityPill, { priority: task.priority }) : null,
+                  task.title
+                ]
               }),
               (reason || due || task.project || task.priority || task.owner || task.nextAction || task.recurrence || task.inbox) && jsx('div', {
                 className: cn(
@@ -1466,12 +1523,15 @@ function BoardView({ remote, rowProps, sections }) {
       jsx(Section, {
         count: sections.now.length,
         title: 'Now',
-        children: sections.now.length
-          ? sections.now.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), prominent: true, task }, task.id))
-          : jsx('div', {
-              className: 'border-l-2 border-l-(--ui-stroke-secondary) py-2 pl-2.5 text-xs leading-5 text-(--ui-text-quaternary)',
-              children: 'Nothing is running. Choose Start now when you are ready.'
-            })
+        children: jsx('div', {
+          'data-todo-now': '1',
+          children: sections.now.length
+            ? sections.now.map(task => jsx(TaskRow, { ...rowProps, pending: remote.pendingIds.has(task.id), prominent: true, task }, task.id))
+            : jsx('div', {
+                className: 'border-l-2 border-l-(--ui-stroke-secondary) py-2 pl-2.5 text-xs leading-5 text-(--ui-text-quaternary)',
+                children: 'Nothing is running. Drop a task here or choose Start now.'
+              })
+        })
       }),
       CATEGORY_ORDER.map(categoryId => jsx(DropCategorySection, {
         categoryId,
@@ -1600,10 +1660,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.4.2 · Shared with Hermes'
+    ? 'v0.5.0 · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.4.2 · Connecting…'
-      : `v0.4.2 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.5.0 · Connecting…'
+      : `v0.5.0 · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     completeSession: remote.completeSession,

@@ -1,5 +1,5 @@
 name: hermes-todo
-version: 0.4.2
+version: 0.5.0
 description: "Shared Todo board with re-entry context, agent sessions, history, recurrence, and categories."
 author: "Hermes Todo contributors"
 kind: standalone
