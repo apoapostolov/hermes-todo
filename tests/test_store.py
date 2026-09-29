@@ -744,7 +744,13 @@ class HermesTodoStoreTests(unittest.TestCase):
         self.assertEqual(repeated["revision"], revision)
         with self.assertRaisesRegex(BoardError, "active linked session"):
             link_task_session(task["id"], "stored-session-2")
-        finished = complete_task_session(task["id"], expected_revision=revision)
+        replaced = link_task_session(
+            task["id"], "stored-session-2", replace_active=True, expected_revision=revision
+        )
+        self.assertEqual(replaced["task"]["sessionId"], "stored-session-2")
+        self.assertEqual(replaced["task"]["sessionState"], "active")
+        self.assertGreater(replaced["revision"], revision)
+        finished = complete_task_session(task["id"], expected_revision=replaced["revision"])
         self.assertEqual(finished["task"]["sessionState"], "completed")
 
         blocked = create_task("Blocked work", status="blocked", blocker="Need approval")["tasks"][-1]

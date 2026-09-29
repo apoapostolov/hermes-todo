@@ -1837,6 +1837,7 @@ def link_task_session(
     session_id: str,
     *,
     start_now: bool = True,
+    replace_active: bool = False,
     expected_revision: int | None = None,
     actor: str | None = None,
     event_source: str = "store",
@@ -1846,6 +1847,7 @@ def link_task_session(
     if clean_session_id is None:
         raise BoardError("Session ID is required")
     start_now = _clean_bool(start_now, "Start now")
+    replace_active = _clean_bool(replace_active, "Replace active")
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1853,13 +1855,16 @@ def link_task_session(
         existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if existing is None:
             raise KeyError(task_id)
+        replacing = False
         if existing["session_state"] == "active":
-            if existing["session_id"] != clean_session_id:
+            if existing["session_id"] == clean_session_id:
+                result = _task_result(conn, task_id)
+                conn.commit()
+                return _return_mutation(conn, result, return_board)
+            if not replace_active:
                 raise BoardError("Task already has an active linked session")
-            result = _task_result(conn, task_id)
-            conn.commit()
-            return _return_mutation(conn, result, return_board)
-        if existing["status"] != "open":
+            replacing = True
+        elif existing["status"] != "open":
             raise BoardError("Reopen and clear waiting or blocking context before starting work")
         now = _utc_now()
         affected: list[str] = []
@@ -1880,6 +1885,12 @@ def link_task_session(
             _append_event(
                 conn, task_id, "task.plan_changed",
                 data={"from": existing["plan"], "to": "now", "reason": "session-started"},
+                actor=actor, source=event_source, created_at=now,
+            )
+        if replacing:
+            _append_event(
+                conn, task_id, "session.replaced",
+                data={"from": existing["session_id"], "to": clean_session_id},
                 actor=actor, source=event_source, created_at=now,
             )
         _append_event(

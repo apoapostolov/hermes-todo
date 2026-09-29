@@ -80,6 +80,13 @@ function makeId() {
   return `task-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function isMissingHermesSession(error) {
+  const code = error && typeof error === 'object' ? error.code : undefined
+  if (code === 4007 || code === 4001) return true
+  const message = String(error?.message || error || '').toLowerCase()
+  return message.includes('session not found')
+}
+
 const dragPointerState = {
   task: null,
   startX: 0,
@@ -697,7 +704,7 @@ function useRemoteBoard(ctx) {
   )
 
   const linkSession = useCallback(
-    (id, sessionId) => enqueue(async () => {
+    (id, sessionId, options = {}) => enqueue(async () => {
       setPendingIds(current => new Set(current).add(id))
       try {
         const snapshot = boardRef.current
@@ -707,7 +714,8 @@ function useRemoteBoard(ctx) {
             sessionId,
             startNow: true,
             expectedRevision: snapshot.revision,
-            eventSource: 'desktop'
+            eventSource: 'desktop',
+            ...(options.replaceActive ? { replaceActive: true } : {})
           },
           timeoutMs: 8000
         })
@@ -1658,18 +1666,33 @@ function TodoPane({ ctx }) {
   const workWithHermes = useCallback(
     async task => {
       if (workPending.current.has(task.id)) return
-      if (task.sessionId && task.sessionState === 'active') {
-        host.navigate(`/${encodeURIComponent(task.sessionId)}`)
-        return
-      }
-      if (task.status !== 'open') {
-        host.notify({ kind: 'warning', message: 'Reopen and clear the waiting or blocking context before starting Hermes.' })
-        return
-      }
       if (host.state.gateway.get() !== 'open') {
         host.notify({ kind: 'warning', message: 'Connect Hermes before starting this task.' })
         return
       }
+
+      let replaceActive = false
+      if (task.sessionId && task.sessionState === 'active') {
+        try {
+          await host.request('session.resume', { session_id: task.sessionId, omit_messages: true, lazy: true })
+          await host.request('session.archive', { session_id: task.sessionId, archived: false }).catch(() => undefined)
+          host.navigate(`/${encodeURIComponent(task.sessionId)}`)
+          return
+        } catch (error) {
+          if (!isMissingHermesSession(error)) {
+            host.notifyError(error, 'Could not open the linked Hermes session')
+            return
+          }
+          host.notify({ kind: 'warning', message: 'The linked Hermes session is gone. Starting a new work session.' })
+          replaceActive = true
+        }
+      }
+
+      if (!replaceActive && task.status !== 'open') {
+        host.notify({ kind: 'warning', message: 'Reopen and clear the waiting or blocking context before starting Hermes.' })
+        return
+      }
+
       workPending.current.add(task.id)
       setWorkingId(task.id)
       let createdSession = null
@@ -1691,7 +1714,7 @@ function TodoPane({ ctx }) {
         if (!createdSession?.session_id || !createdSession?.stored_session_id) {
           throw new Error('Hermes did not return a usable new session')
         }
-        linked = await remote.linkSession(task.id, createdSession.stored_session_id)
+        linked = await remote.linkSession(task.id, createdSession.stored_session_id, { replaceActive })
         if (!linked) {
           await host.request('session.close', { session_id: createdSession.session_id }).catch(() => undefined)
           return

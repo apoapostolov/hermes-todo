@@ -130,6 +130,7 @@ class ImportBody(StrictModel):
 class SessionLinkBody(StrictModel):
     session_id: str = Field(alias="sessionId", min_length=1, max_length=300)
     start_now: bool = Field(default=True, alias="startNow")
+    replace_active: bool = Field(default=False, alias="replaceActive")
     expected_revision: int | None = Field(default=None, alias="expectedRevision", ge=0)
     actor: str | None = Field(default=None, max_length=200)
     event_source: str | None = Field(default=None, alias="eventSource", max_length=100)
@@ -344,6 +345,7 @@ def link_session(task_id: str, body: SessionLinkBody, envelope: str = "board"):
             task_id,
             payload["session_id"],
             start_now=payload["start_now"],
+            replace_active=payload["replace_active"],
             expected_revision=expected_revision,
             actor=actor,
             event_source=event_source,

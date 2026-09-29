@@ -127,7 +127,10 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("Resume with Hermes", source)
         self.assertIn("Close linked session", source)
         self.assertIn("completeSession(task.id)", source)
-        self.assertIn("remote.linkSession(task.id, createdSession.stored_session_id)", source)
+        self.assertIn("remote.linkSession(task.id, createdSession.stored_session_id, { replaceActive })", source)
+        self.assertIn("host.request('session.resume'", source)
+        self.assertIn("function isMissingHermesSession(error)", source)
+        self.assertIn("The linked Hermes session is gone. Starting a new work session.", source)
         self.assertLess(
             source.index("if (task.sessionId && task.sessionState === 'active')"),
             source.index("createdSession = await host.request('session.create'"),
