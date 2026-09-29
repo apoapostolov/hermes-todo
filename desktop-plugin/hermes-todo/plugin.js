@@ -2163,10 +2163,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.3.0-dev · Shared with Hermes'
+    ? 'v0.3.0 · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.3.0-dev · Connecting…'
-      : `v0.3.0-dev · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.3.0 · Connecting…'
+      : `v0.3.0 · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     addSubtask: remote.addSubtask,
