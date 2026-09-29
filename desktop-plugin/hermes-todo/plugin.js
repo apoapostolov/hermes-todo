@@ -31,7 +31,7 @@ const CATEGORY_LABELS = {
 }
 const POLL_MS = 3000
 
-const emptyBoard = () => ({ version: 5, revision: 0, tasks: [] })
+const emptyBoard = () => ({ version: 6, revision: 0, tasks: [] })
 
 // Hermes Desktop evaluates disk plugins as one uncompiled ESM module loaded
 // from a blob URL. Keep this formatter inline: relative imports such as
@@ -103,6 +103,7 @@ function normaliseTask(task) {
   const category = CATEGORY_SET.has(task.category)
     ? task.category
     : plan === 'later' ? 'soon' : 'today'
+  const position = Number.isFinite(Number(task.position)) ? Number(task.position) : 0
   return {
     ...task,
     id: typeof task.id === 'string' && task.id ? task.id : makeId(),
@@ -110,6 +111,7 @@ function normaliseTask(task) {
     plan,
     status,
     category,
+    position,
     lane: status === 'open' ? plan : status,
     estimate: Number.isFinite(Number(task.estimate)) ? Number(task.estimate) : 25,
     dueDate: typeof task.dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate) ? task.dueDate : null,
@@ -159,7 +161,7 @@ function normaliseBoard(value) {
     keptNow = true
   }
   return {
-    version: Number(value.version) || 5,
+    version: Number(value.version) || 6,
     revision: Number(value.revision) || 0,
     tasks
   }
@@ -283,6 +285,30 @@ function optimisticPatch(board, id, changes) {
   nextTarget.lane = nextTarget.status === 'open' ? nextTarget.plan : nextTarget.status
   if (Object.prototype.hasOwnProperty.call(changes, 'category') && !CATEGORY_SET.has(nextTarget.category)) {
     nextTarget.category = 'today'
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(changes, 'beforeId') ||
+    Object.prototype.hasOwnProperty.call(changes, 'afterId') ||
+    (Object.prototype.hasOwnProperty.call(changes, 'category') && changes.category !== target.category)
+  ) {
+    const siblings = board.tasks
+      .filter(task => task.id !== id && task.category === nextTarget.category && task.status !== 'done' && !task.inbox && task.plan !== 'now')
+      .map(task => ({ id: task.id, position: Number(task.position) || 0 }))
+      .sort((a, b) => a.position - b.position)
+    const beforePosition = changes.beforeId ? siblings.find(task => task.id === changes.beforeId)?.position : undefined
+    const afterPosition = changes.afterId ? siblings.find(task => task.id === changes.afterId)?.position : undefined
+    if (beforePosition !== undefined && afterPosition !== undefined) {
+      nextTarget.position = (beforePosition + afterPosition) / 2
+    } else if (beforePosition !== undefined) {
+      const prev = siblings.filter(task => task.position < beforePosition).pop()
+      nextTarget.position = prev ? (prev.position + beforePosition) / 2 : beforePosition - 1024
+    } else if (afterPosition !== undefined) {
+      const next = siblings.find(task => task.position > afterPosition)
+      nextTarget.position = next ? (afterPosition + next.position) / 2 : afterPosition + 1024
+    } else {
+      const last = siblings[siblings.length - 1]
+      nextTarget.position = last ? last.position + 1024 : 1024
+    }
   }
 
   return {
@@ -429,6 +455,50 @@ function useRemoteBoard(ctx) {
     [update]
   )
 
+  const reorder = useCallback(
+    (id, target) => enqueue(async () => {
+      await queryClient.cancelQueries({ queryKey })
+      const snapshot = boardRef.current
+      const changes = { category: target.category }
+      if (target.beforeId) changes.beforeId = target.beforeId
+      if (target.afterId) changes.afterId = target.afterId
+      const optimistic = optimisticPatch(snapshot, id, changes)
+      boardRef.current = optimistic
+      queryClient.setQueryData(queryKey, optimistic)
+      setPendingIds(current => new Set(current).add(id))
+      try {
+        const remote = await sharedBoardRest(ctx, `/tasks/${encodeURIComponent(id)}/reorder?envelope=result`, {
+          method: 'POST',
+          body: {
+            category: target.category,
+            beforeId: target.beforeId || null,
+            afterId: target.afterId || null,
+            expectedRevision: snapshot.revision,
+            eventSource: 'desktop'
+          },
+          timeoutMs: 8000
+        })
+        commitMutation(remote)
+        return true
+      } catch (error) {
+        if (boardRef.current === optimistic) {
+          boardRef.current = snapshot
+          queryClient.setQueryData(queryKey, snapshot)
+        }
+        host.notifyError(error, 'Could not reorder the shared Todo board')
+        return false
+      } finally {
+        setPendingIds(current => {
+          const next = new Set(current)
+          next.delete(id)
+          return next
+        })
+        invalidateRelated(id)
+      }
+    }),
+    [commitMutation, ctx, enqueue, invalidateRelated, queryClient, queryKey]
+  )
+
   const add = useCallback(
     title => enqueue(async () => {
       setAdding(true)
@@ -552,6 +622,7 @@ function useRemoteBoard(ctx) {
     completeSession,
     connection: query.isError ? 'offline' : query.data ? 'online' : 'connecting',
     cycleEstimate,
+    reorder,
     error: query.error ? errorText(query.error) : '',
     linkSession,
     pendingIds,
@@ -1177,36 +1248,51 @@ function CollapsibleSection(props) {
 }
 
 const CATEGORY_ORDER = ['today', 'tomorrow', 'this-week', 'this-month', 'soon']
-const CATEGORY_DROP_REFS = Object.fromEntries(CATEGORY_ORDER.map(key => [key, { current: null }]))
 
 function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
-  const [dropActive, setDropActive] = useState(false)
-  const dropTargetRef = CATEGORY_DROP_REFS[categoryId]
-  if (!tasks.length && !dropActive) return null
-  return jsxs('section', {
-    ref: dropTargetRef,
+  const [dropIndex, setDropIndex] = useState(null)
+  const sectionRef = useRef(null)
+
+  const clearDrop = () => setDropIndex(null)
+
+  const handleDrop = event => {
+    event.preventDefault()
+    const dragged = dragTaskCategory.task
+    dragTaskCategory.task = null
+    const index = dropIndex
+    clearDrop()
+    if (!dragged || index === null) return
+    const siblings = tasks.filter(task => task.id !== dragged.id)
+    const clamped = Math.max(0, Math.min(index, siblings.length))
+    const before = siblings[clamped]
+    const after = siblings[clamped - 1]
+    const sameSpot =
+      dragged.category === categoryId &&
+      ((before && dragged.id === before.id) || (after && dragged.id === after.id))
+    if (sameSpot) return
+    const target = { category: categoryId }
+    if (before) target.beforeId = before.id
+    if (after) target.afterId = after.id
+    rowProps.reorder(dragged.id, target)
+  }
+
+  const dropLine = index => jsx('div', {
     className: cn(
-      'mt-3 min-w-0 max-w-full rounded-md transition-colors',
-      dropActive && 'outline-2 outline-(--ui-accent)'
-    ),
+      'pointer-events-none h-0.5 rounded-full bg-(--ui-accent) transition-opacity',
+      dropIndex === index ? 'opacity-100' : 'opacity-0'
+    )
+  }, `drop-${categoryId}-${index}`)
+
+  return jsxs('section', {
+    ref: sectionRef,
+    className: 'mt-4 min-w-0 max-w-full first:mt-0',
     onDragOver: event => {
       if (!dragTaskCategory.task) return
       event.preventDefault()
       event.dataTransfer.dropEffect = 'move'
-      setDropActive(true)
     },
-    onDragLeave: event => {
-      if (dropTargetRef?.current && dropTargetRef.current.contains(event.relatedTarget)) return
-      setDropActive(false)
-    },
-    onDrop: event => {
-      event.preventDefault()
-      setDropActive(false)
-      const dragged = dragTaskCategory.task
-      dragTaskCategory.task = null
-      if (!dragged) return
-      if (dragged.category !== categoryId) rowProps.update(dragged.id, { category: categoryId })
-    },
+    onDrop: handleDrop,
+    onDragEnd: clearDrop,
     children: [
       jsxs('div', {
         className: 'mb-1.5 flex items-baseline justify-between gap-2',
@@ -1215,9 +1301,27 @@ function DropCategorySection({ categoryId, rowProps, pendingIds, tasks }) {
           jsx('span', { className: 'text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)', children: tasks.length })
         ]
       }),
-      jsx('div', {
-        children: tasks.map(task => jsx(TaskRow, { ...rowProps, pending: pendingIds.has(task.id), task }, task.id))
-      })
+      dropLine(0),
+      tasks.length
+        ? tasks.map((task, index) => jsxs('div', {
+            onDragOver: event => {
+              if (!dragTaskCategory.task) return
+              event.preventDefault()
+              event.stopPropagation()
+              event.dataTransfer.dropEffect = 'move'
+              const rect = event.currentTarget.getBoundingClientRect()
+              const inTopHalf = event.clientY - rect.top < rect.height / 2
+              setDropIndex(inTopHalf ? index : index + 1)
+            },
+            children: [
+              jsx(TaskRow, { ...rowProps, pending: pendingIds.has(task.id), task }, task.id),
+              dropLine(index + 1)
+            ]
+          }, task.id))
+        : jsx('div', {
+            className: 'py-1 text-[0.6875rem] text-(--ui-text-quaternary)',
+            children: 'Drop tasks here.'
+          })
     ]
   })
 }
@@ -1274,6 +1378,11 @@ function TodoPane({ ctx }) {
       const haystack = [task.title, task.project, task.recurrence, task.recurrenceRule, task.brief, task.nextAction, task.owner, task.waitingOn, task.blocker].filter(Boolean).join(' ').toLocaleLowerCase()
       if (!needle || haystack.includes(needle)) grouped[sectionFor(task)].push(task)
     }
+    const byPosition = (a, b) => (a.position || 0) - (b.position || 0) ||
+      timeValue(a.createdAt) - timeValue(b.createdAt)
+    for (const key of ['today', 'tomorrow', 'this-week', 'this-month', 'soon']) {
+      grouped[key].sort(byPosition)
+    }
     const dueThenCreated = (a, b) => {
       const aPriority = a.priority || 99
       const bPriority = b.priority || 99
@@ -1281,7 +1390,7 @@ function TodoPane({ ctx }) {
       const bDue = b.dueDate || b.dueAt || '9999'
       return aPriority - bPriority || aDue.localeCompare(bDue) || timeValue(a.createdAt) - timeValue(b.createdAt)
     }
-    for (const key of ['inbox', 'now', 'today', 'tomorrow', 'this-week', 'this-month', 'soon', 'waiting', 'blocked']) {
+    for (const key of ['inbox', 'now', 'waiting', 'blocked']) {
       grouped[key].sort(dueThenCreated)
     }
     grouped.done.sort((a, b) => timeValue(b.completedAt) - timeValue(a.completedAt))
@@ -1364,10 +1473,10 @@ function TodoPane({ ctx }) {
   )
 
   const connectionLabel = remote.connection === 'online'
-    ? 'v0.3.0 · Shared with Hermes'
+    ? 'v0.4.0 · Shared with Hermes'
     : remote.connection === 'connecting'
-      ? 'v0.3.0 · Connecting…'
-      : `v0.3.0 · Offline: ${remote.error || 'request failed'}`
+      ? 'v0.4.0 · Connecting…'
+      : `v0.4.0 · Offline: ${remote.error || 'request failed'}`
 
   const rowProps = {
     completeSession: remote.completeSession,
@@ -1375,6 +1484,7 @@ function TodoPane({ ctx }) {
     cycleEstimate: remote.cycleEstimate,
     pending: false,
     remove: remote.remove,
+    reorder: remote.reorder,
     update: remote.update,
     workingId,
     workWithHermes
