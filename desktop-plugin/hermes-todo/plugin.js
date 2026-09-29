@@ -1514,27 +1514,7 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
                 })
               : jsx('div', { className: 'py-2 text-[0.6875rem] text-(--ui-text-quaternary)', children: 'No history recorded yet.' })
       ]
-    }, 'history'),
-    jsxs('div', {
-      className: 'mt-2 flex items-center gap-1',
-      children: [
-        jsx(Button, {
-          disabled,
-          onClick: async () => {
-            if (!confirmDelete) {
-              setConfirmDelete(true)
-              return
-            }
-            if (await remove(task.id)) close()
-          },
-          size: 'xs',
-          type: 'button',
-          variant: 'text',
-          children: confirmDelete ? 'Confirm delete' : 'Delete'
-        }),
-        jsx(Button, { disabled, onClick: close, size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
-      ]
-    }, 'actions')
+    }, 'history')
   ]
 
   const subsFields = [
@@ -1585,7 +1565,27 @@ function TaskDetails({ ctx, task, disabled, update, remove, close, completeSessi
           })
         ]
       }),
-      ...tabFields
+      ...tabFields,
+      jsxs('div', {
+        className: 'mt-2 flex items-center gap-1',
+        children: [
+          jsx(Button, {
+            disabled,
+            onClick: async () => {
+              if (!confirmDelete) {
+                setConfirmDelete(true)
+                return
+              }
+              if (await remove(task.id)) close()
+            },
+            size: 'xs',
+            type: 'button',
+            variant: 'text',
+            children: confirmDelete ? 'Confirm delete' : 'Delete'
+          }),
+          jsx(Button, { disabled, onClick: close, size: 'xs', type: 'button', variant: 'text', children: 'Cancel' })
+        ]
+      })
     ]
   })
 }
