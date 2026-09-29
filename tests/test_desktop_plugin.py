@@ -55,6 +55,8 @@ class HermesTodoDesktopContractTests(unittest.TestCase):
         self.assertIn("id: 'subs'", source)
         self.assertIn("function SubtaskEditor", source)
         self.assertIn("task.subtaskCount > 0", source)
+        self.assertIn("'due-row'", source)
+        self.assertIn("'aria-label': 'Due date'", source)
         self.assertIn("initial.dueMode !== current.dueMode", source)
         self.assertIn("artefacts: lines(artefactsDraft)", source)
         self.assertIn("closureEvidence: lines(closureEvidenceDraft)", source)
